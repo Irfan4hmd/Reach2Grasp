@@ -32,7 +32,7 @@ def make_panda_env(render_mode: str = "human"):
         has_offscreen_renderer=render_mode == "headless",           # no off-screen rendering
         control_freq=20,                        # 20 hz control for applied actions
         horizon=200,                            # each episode terminates after 200 steps
-        use_object_obs=False,                     # Generates object coordinates/orientations
+        use_object_obs=True,                     # Generates object coordinates/orientations
         use_camera_obs=False,                     # Generates visual RGB-D arrays
         # camera_names=["agentview", "robot0_eye_in_hand"],  # Cameras to capture
         # camera_heights=256,
@@ -53,11 +53,16 @@ def run_random_policy(env, n_steps: int = 200, save_frames: bool = False):
           store/save it
     - close env cleanly at the end
     """
-    env.reset()
+    obs = env.reset()
+
+    print("Observation keys:")
+    for key, value in obs.items():
+        print(f"{key}: shape={value.shape}, value={value}")
     for i in range(0,n_steps):
         low, high = env.action_spec
         action = np.random.uniform(low, high)
         next_obs, reward, done, info = env.step(action)
+        
         if env.has_renderer:
             env.render()
         # if save_frames == True:
@@ -81,4 +86,5 @@ if __name__ == "__main__":
     
     render_mode = "headless" if args.headless else "human"
     env = make_panda_env(render_mode=render_mode)
-    run_random_policy(env, n_steps=200, save_frames=args.save_frames)
+    
+    run_random_policy(env, n_steps=1, save_frames=args.save_frames)
