@@ -29,7 +29,7 @@ def make_panda_env(render_mode: str = "human"):
         # env_configuration="opposed",            # (two-arm envs only) arms face each other
         has_renderer=render_mode == "human",                      # on-screen rendering
         render_camera="frontview",              # visualize the "frontview" camera
-        has_offscreen_renderer=render_mode == "headless",           # no off-screen rendering
+        has_offscreen_renderer=False,           # no off-screen rendering
         control_freq=20,                        # 20 hz control for applied actions
         horizon=200,                            # each episode terminates after 200 steps
         use_object_obs=True,                     # Generates object coordinates/orientations
