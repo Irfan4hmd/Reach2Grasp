@@ -3,6 +3,8 @@ import logging
 import time
 import warnings
 
+
+
 warnings.filterwarnings("ignore")
 logging.disable(logging.CRITICAL)   # suppresses robosuite log warnings for now
 
@@ -11,6 +13,7 @@ logging.disable(logging.CRITICAL)   # suppresses robosuite log warnings for now
 import numpy as np
 import robosuite as suite
 from robosuite.controllers import load_composite_controller_config
+from success_report import SuccessReport
 
 
 """
@@ -27,7 +30,7 @@ This is intentionally simple and safe for learning. It is not a full RL policy y
 """
 
 
-def make_panda_pickplace_env(render_mode: str = "human", n_steps: int = 500):
+def make_panda_pickplace_env(render_mode: str = "human", n_steps: int = 500, seed: int = 0):
     """
     Create a Panda environment suited for a simple grasping task.
     We deliberately use PickPlaceCan because it is a good beginner task:
@@ -50,6 +53,7 @@ def make_panda_pickplace_env(render_mode: str = "human", n_steps: int = 500):
         horizon=n_steps,
         use_object_obs=True,
         use_camera_obs=False,
+        seed=seed,
     )
     return env
 
@@ -86,11 +90,20 @@ def scripted_grasp(env, n_steps: int = 200):
     policy.
     """
     obs = env.reset()
+    object_start_z = get_object_position(env)[2]
+    object_id = env.object_id
+    target_bin = env.target_bin_placements[object_id].copy()
+    can = env.objects[object_id]
+    can_geom_id = env.obj_geom_id[can.name][0]
+    can_half_height = env.sim.model.geom_size[can_geom_id, 2]
 
-    grasped = False
-    lifted = False
+    place_pos = target_bin.copy()
+    place_pos[2] += can_half_height
+    print(f"Place position: {place_pos}")
+    phase = "approach"
     close_wait = 0
-    lift_height = 0.0
+    stable_steps = 0
+    place_stable_steps = 0
 
     low, high = env.action_spec
 
@@ -103,60 +116,113 @@ def scripted_grasp(env, n_steps: int = 200):
 
         action = np.zeros_like(low)
 
-        if not grasped:
+        if phase == "approach":
             # 1) Approach a waypoint above the object
             target_pos = object_pos + np.array([0.0, 0.0, 0.15])
             delta = target_pos - eef_pos
 
-            action[:3] = np.clip(delta[:3], -0.05, 0.05)
+            action[:3] = np.clip(delta[:3], -0.1, 0.1)
             action[3:6] = 0.0
             action[6] = 0.0
 
-            # 2) Close gripper when close enough
+            # 2) open the gripper when close to waypoint
             if np.linalg.norm(delta[:3]) < 0.03:
                 action[6] = -1.0
-                close_wait += 1
-                if close_wait >= 5:
-                    grasped = True
-                    print("Object grasped, waiting to lift...")
+                phase = "descend"
+                print("Descending toward object...")
 
-        elif not lifted:
-            # 3) Wait after close
-            action[:3] = np.array([0.0, 0.0, 0.0])
+        elif phase == "descend":
+            # 3) descend toward the object and close the gripper
+            delta = object_pos - eef_pos
+            action[:3] = np.clip(delta[:3], -0.1, 0.1)
             action[3:6] = 0.0
             action[6] = -1.0
 
-            if close_wait >= 5:
-                # 4) Lift upward
-                action[:3] = np.array([0.0, 0.0, 0.04])
-                action[6] = -1.0
-                lift_height += 0.04
-
-                if lift_height > 0.12:
-                    lifted = True
-
+            if np.linalg.norm(delta[:3]) < 0.02:
+                print("Closing gripper...")
+                action[6] = 1.0  # close gripper
+                close_wait+=1
+                if close_wait > 5:
+                    eef_start_z = eef_pos[2]
+                    phase = "lift"
+                    
+        
+        elif phase == "lift":
+            # 4) lift the object
+            action[:3] = np.array([0.0, 0.0, 0.05])  # lift up
+            action[6] = 1.0  # keep gripper closed
+            print("Lifting object...")
+            if eef_pos[2] - eef_start_z >= 0.05:
+                phase = "verify"
+            
         # 5) Check object stability after lift
-        if lifted:
-            object_dist = np.linalg.norm(object_pos - eef_pos)
-            print("distance to object after lift:", object_dist)
-
-            if object_dist < 0.05:
+        elif phase == "verify":
+            object_lifted = object_pos[2] - object_start_z > 0.05
+            if object_lifted:
+                stable_steps += 1
+            else:
+                stable_steps = 0
+            if object_lifted and stable_steps >= 5:
                 print("grasp success")
-                break
+                phase = "transport"
+        elif phase == "transport":
+            # 6) Move to the place position
+            
+            target_pos = place_pos + np.array([0.0, 0.0, 0.25])  # waypoint above place position
+            delta = target_pos - object_pos
+            action[:3] = np.clip(delta[:3], -0.1, 0.1)
+            if np.linalg.norm(delta[:3]) < 0.05:
+                print("Reached place position.")
+                phase = "lower"
+        elif phase == "lower":
+            # 6) Lower the object until it is close to the place position
+            
+            delta = place_pos - object_pos
+            action[:3] = np.clip(delta[:3], -0.05, 0.05)
+            print("Lowering object...")
+            if np.linalg.norm(delta[:3]) < 0.03:
+                print("Reached place position.")
+                phase = "release"
+        elif phase == "release":
+            # 7) Release the object
+            action[6] = -1.0  # open gripper
+            placed_near_target = np.linalg.norm(place_pos - object_pos) < 0.04
+            if placed_near_target:
+                place_stable_steps += 1
+            else:
+                place_stable_steps = 0
+
+            if place_stable_steps >= 5:
+                retreat_start_z = eef_pos[2]
+                phase = "retreat"
+                
+        elif phase == "retreat":
+            action[:3] = np.array([0.0, 0.0, 0.05])
+            action[6] = -1.0
+            if eef_pos[2] - retreat_start_z > 0.06:
+                task_success = env._check_success()
+                print("Robosuite task success:", task_success)
+                if task_success:
+                    print("Place successful.")
+                    return task_success, phase
+                
 
         action = np.clip(action, low, high)
         obs, reward, done, info = env.step(action)
-
+        # if step % 20 == 0 or reward != 0 or done:
+        #     print(f"step={step}, reward={reward}, done={done}, info={info}")
         if env.has_renderer:
             env.render()
 
         if done:
             print(f"Episode ended at step {step}.")
-            break
+            return env._check_success(), phase
+        if env.has_renderer:
+            time.sleep(0.05)
+    
+    return env._check_success(), phase   # return the last phase if we exit the loop without success        
 
-        time.sleep(0.05)
-
-    env.close()
+    
 
 
 def main():
@@ -166,13 +232,36 @@ def main():
     
     parser = argparse.ArgumentParser(description="Day 5: Panda grasping demo")
     parser.add_argument("--headless", action="store_true", help="Run without on-screen rendering")
+    parser.add_argument("--trials", type=int, default=5)
     args = parser.parse_args()
-    
+    if args.trials <= 0:
+        parser.error("--trials must be a positive integer")
     render_mode = "headless" if args.headless else "human"
-    n_steps = 500
-    env = make_panda_pickplace_env(render_mode=render_mode,n_steps=n_steps)
-    scripted_grasp(env, n_steps=n_steps)
-
-
+    n_steps = 3000
+     # Example place position
+    successful_trials = 0
+    unsuccessful_grasps_message: list[SuccessReport] = []
+    for i in range(args.trials):
+        print(f"Running pick-and-place trial {i+1}...")
+        env = make_panda_pickplace_env(render_mode=render_mode,n_steps=n_steps)
+        task_success, phase = scripted_grasp(env, n_steps=n_steps)
+        if task_success:
+            successful_trials += 1
+        else:
+            report = SuccessReport()
+            report.successful = False
+            report.last_phase = phase
+            report.trial_number = i + 1
+            report.object_to_target_distance = np.linalg.norm(get_object_position(env) - env.target_bin_placements[env.object_id])
+            unsuccessful_grasps_message.append(report)
+        env.close()
+        
+    print(f"Successful pick-and-place trials: {successful_trials} out of {args.trials}")
+    for message in unsuccessful_grasps_message:
+        print(f"Pick-and-place trial {message.trial_number} failed with can-to-target distance: {message.object_to_target_distance:.3f}; last phase: {message.last_phase}")
+    
+    success_rate = successful_trials / args.trials
+    print(f"Overall success rate: {success_rate:.2%}")
+    
 if __name__ == "__main__":
     main()
