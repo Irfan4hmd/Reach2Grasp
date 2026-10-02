@@ -20,6 +20,6 @@ def set_phase_budgets(success_reports):
             phase_steps[phase].append(steps)
 
     # Compute the maximum steps for each phase and set the phase budgets to 2x the average steps and 2 floating point numbers
-    phase_budgets = {phase: (max(steps) * 3, 2) for phase, steps in phase_steps.items()}
+    phase_budgets = {phase: (max(steps) * 3) for phase, steps in phase_steps.items()}
 
     return phase_budgets

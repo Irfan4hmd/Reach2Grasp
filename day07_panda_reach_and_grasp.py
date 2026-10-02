@@ -11,7 +11,12 @@ from success_report import SuccessReport
 class ScriptedPickPlacePolicy:
     
 
-
+    def __init__(self,k_lower=5,k_move=6,max_action_move=1,max_action_lift=0.5):
+        self.K_lower = k_lower
+        self.K_move = k_move
+        self.max_action_move = max_action_move
+        self.max_action_lift = max_action_lift
+        
     def reset(self,env,obs):
         self.phase = "approach"
         self.close_wait = 0
@@ -34,10 +39,8 @@ class ScriptedPickPlacePolicy:
             "release": 0,
             "retreat": 0
         }
-        self.phase_budgets = {'approach': 840, 'descend': 537, 'lift': 252, 'verify': 15, 'transport': 1914, 'lower': 876, 'release': 15, 'retreat': 51}
-        
-        
-        
+        self.phase_budgets = {'approach': 99, 'descend': 93, 'lift': 33, 'verify': 15, 'transport': 198, 'lower': 120, 'release': 15, 'retreat': 15}
+
     
     def act(self,obs):
         
@@ -45,6 +48,7 @@ class ScriptedPickPlacePolicy:
         eef_pos = obs["robot0_eef_pos"]
         place_pos = self.place_pos
         low, high = self.low, self.high
+        
 
         action = np.zeros_like(low)
         self.phase_steps[self.phase] += 1
@@ -56,7 +60,7 @@ class ScriptedPickPlacePolicy:
             target_pos = object_pos + np.array([0.0, 0.0, 0.15])
             delta = target_pos - eef_pos
 
-            action[:3] = np.clip(delta[:3], -0.1, 0.1)
+            action[:3] = np.clip(self.K_move * delta[:3], -self.max_action_move, self.max_action_move)
             action[3:6] = 0.0
             action[6] = 0.0
 
@@ -68,7 +72,7 @@ class ScriptedPickPlacePolicy:
 
         elif self.phase == "descend":
             delta = object_pos - eef_pos
-            action[:3] = np.clip(delta[:3], -0.1, 0.1)
+            action[:3] = np.clip(self.K_move * delta[:3], -self.max_action_move, self.max_action_move)
             action[3:6] = 0.0
             action[6] = -1.0
 
@@ -84,7 +88,7 @@ class ScriptedPickPlacePolicy:
         
         elif self.phase == "lift":
             # 4) lift the object
-            action[:3] = np.array([0.0, 0.0, 0.05])  # lift up
+            action[:3] = np.array([0.0, 0.0, self.max_action_lift])  # lift up
             action[6] = 1.0  # keep gripper closed
             # Initialize eef_start_z on the first step
             if eef_pos[2] - self.eef_start_z >= 0.05:
@@ -104,7 +108,7 @@ class ScriptedPickPlacePolicy:
             # 6) Move to the place position
             target_pos = place_pos + np.array([0.0, 0.0, 0.25])  # waypoint above place position
             delta = target_pos - object_pos
-            action[:3] = np.clip(delta[:3], -0.1, 0.1)
+            action[:3] = np.clip(self.K_move * delta[:3], -self.max_action_move, self.max_action_move)
             if np.linalg.norm(delta[:3]) < 0.05:
                 print("Reached place position.")
                 self.phase = "lower"
@@ -112,7 +116,7 @@ class ScriptedPickPlacePolicy:
         elif self.phase == "lower":
             # 6) Lower the object until it is close to the place position
             delta = place_pos - object_pos
-            action[:3] = np.clip(delta[:3], -0.05, 0.05)
+            action[:3] = np.clip(self.K_lower * delta[:3], -self.max_action_move, self.max_action_move)
             if np.linalg.norm(delta[:3]) < 0.03:
                 print("Reached place position.")
                 self.phase = "release"
@@ -131,7 +135,7 @@ class ScriptedPickPlacePolicy:
                 self.phase = "retreat"
                 
         elif self.phase == "retreat":
-            action[:3] = np.array([0.0, 0.0, 0.05])
+            action[:3] = np.array([0.0, 0.0, self.max_action_lift])  # move up
             action[6] = -1.0
             
         action = np.clip(action, self.low, self.high)
